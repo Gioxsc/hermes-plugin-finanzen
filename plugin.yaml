@@ -1,0 +1,3 @@
+name: finanzen
+version: 0.1.0
+description: BWA-Dashboard aus nulleins (data/bwa.db) als Tab "Finanzen" in der Hermes Desktop App.
