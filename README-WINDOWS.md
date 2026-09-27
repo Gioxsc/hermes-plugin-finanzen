@@ -6,11 +6,13 @@ Das Plugin läuft auf Windows und macOS. Alle Pfade sind plattformunabhängig
 ## Voraussetzungen
 
 1. **Python 3.10+** (`winget install Python.Python.3.12`) — `fastapi`, `uvicorn` (Hermes-Backend liefert die), für `import_xlsx.py` zusätzlich `pip install openpyxl`
-2. **nulleins-Codebase** unter `C:\Users\<Name>\nullaufeins` mit den Datenbanken:
-   - `data\bwa.db`
-   - `data\invoices.db` + `data\invoice-files\`
-   - `data\daily-receipts\`
-3. **Hermes Desktop** installiert
+2. **Hermes Desktop** installiert
+
+Das Plugin funktioniert **komplett ohne die nulleins-App**: Beim ersten Aufruf
+legt es `bwa.db`, `invoices.db` und `report.db` automatisch selbst an
+(Standard-Ordner: `C:\Users\<Name>\nullaufeins\data\` — nur ein Datenordner,
+die App selbst ist nicht nötig). Daten können jederzeit nachgetragen werden;
+bestehende DBs werden nicht überschrieben.
 
 ## Installation
 
@@ -33,10 +35,10 @@ setx NULLEINS_INVOICE_FILES "D:\nulleins\data\invoice-files"
 setx NULLEINS_DAILY_RECEIPTS "D:\nulleins\data\daily-receipts"
 ```
 
-## Daten übertragen (Mac → Windows)
+## Daten übertragen (Mac → Windows, optional)
 
-Die Daten liegen nicht im Repo (`.db` ist ausgeschlossen). Kopieren per
-USB-Stick / Netzlaufwerk / `scp`:
+Ohne Übertragung startet das Plugin mit leeren Datenbanken. Bestehende Daten
+kopieren per USB-Stick / Netzlaufwerk / `scp`:
 
 ```
 ~/nullaufeins/data/bwa.db

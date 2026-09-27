@@ -44,6 +44,41 @@ async def _read_json(request: Request) -> dict:
 NULLEINS_HOME = Path(os.environ.get("NULLEINS_HOME", Path.home() / "nullaufeins"))
 DEFAULT_DB = str(NULLEINS_HOME / "data" / "bwa.db")
 
+# Schemata identisch zur nulleins-App (lib/bwa-store.ts, lib/invoice-store.ts),
+# damit das Plugin auch OHNE nulleins-App eigenständig funktioniert.
+BWA_SCHEMA = """
+CREATE TABLE IF NOT EXISTS bwa_entries (
+    month TEXT NOT NULL,
+    field TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    PRIMARY KEY (month, field)
+);
+"""
+
+INVOICES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS invoices (
+    email_id TEXT PRIMARY KEY,
+    vendor TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    date TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    category TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'email'
+);
+CREATE TABLE IF NOT EXISTS invoice_matches (
+    invoice_id TEXT PRIMARY KEY,
+    payment_id TEXT NOT NULL,
+    payment_date TEXT NOT NULL,
+    payment_description TEXT NOT NULL,
+    confidence TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invoice_files (
+    email_id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL
+);
+"""
+
 # Reihenfolge wie im KER-Blatt (lib/bwa.ts).
 INPUT_FIELDS: list[tuple[str, str, str]] = [
     ("umsatz", "Umsatzerlöse", "Ertrag"),
@@ -122,11 +157,26 @@ def _parse_german_number(raw) -> Optional[int]:
 
 
 def _db_path() -> Path:
-    return Path(os.environ.get("NULLEINS_BWA_DB", DEFAULT_DB))
+    path = Path(os.environ.get("NULLEINS_BWA_DB", DEFAULT_DB))
+    if not path.exists():
+        # Autonom betreiben: DB selbst anlegen, wenn keine nulleins-App vorhanden.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(path))
+        con.executescript(BWA_SCHEMA)
+        con.commit()
+        con.close()
+    return path
 
 
 def _invoices_db_path() -> Path:
-    return Path(os.environ.get("NULLEINS_INVOICES_DB", NULLEINS_HOME / "data" / "invoices.db"))
+    path = Path(os.environ.get("NULLEINS_INVOICES_DB", NULLEINS_HOME / "data" / "invoices.db"))
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(str(path))
+        con.executescript(INVOICES_SCHEMA)
+        con.commit()
+        con.close()
+    return path
 
 
 def _invoice_files_dir() -> Path:
@@ -299,7 +349,7 @@ async def overview(month: Optional[str] = Query(None)):
     """Monat + Jahresübersicht in einem Aufruf (alles Cent)."""
     if not _db_path().exists():
         raise HTTPException(404, f"BWA-Datenbank nicht gefunden: {_db_path()}")
-    con = sqlite3.connect(f"file:{_db_path()}?mode=ro", uri=True)
+    con = sqlite3.connect(f"{_db_path().resolve().as_uri()}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
         cur = con.cursor()
