@@ -1179,6 +1179,25 @@ function FinanzenPage() {
   }, [data])
 
   if (error) {
+    const empty = /Noch keine BWA-Monate/i.test(error)
+    if (empty) {
+      return jsx('div', { className: 'p-4 text-sm flex flex-col gap-2', children: [
+        jsx('div', { className: 'font-medium', children: 'Finanzen · BWA' }),
+        jsx('div', { className: 'text-[12px] opacity-60', children:
+          'Noch keine BWA-Monate erfasst. Leg los: Tägliche Einnahmen und Ausgaben im Tab „Tagebuch" erfassen (rollieren automatisch in die Monats-BWA) — oder hier den ersten Monat direkt anlegen.' }),
+        jsx('div', { children: jsx('button', { type: 'button', className: 'fz-btn fz-btn--primary',
+          onClick: async () => {
+            setBusy(true)
+            try {
+              await _rest('/overview', { method: 'POST', timeoutMs: 10000,
+                body: JSON.stringify({ month: thisMonth(), entries: { umsatz: '0' } }) })
+              setMonth(thisMonth())
+              setReloadKey((k) => k + 1)
+            } catch (e) { setError(String(e?.message ?? e)) }
+            setBusy(false)
+          }, children: busy ? 'Lege an …' : `Monat ${label(thisMonth())} anlegen` }) }),
+      ] })
+    }
     return jsx('div', {
       className: 'p-4 text-sm',
       children: jsxs('div', { className: 'flex flex-col gap-2', children: [
