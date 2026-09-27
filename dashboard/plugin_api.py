@@ -39,7 +39,10 @@ async def _read_json(request: Request) -> dict:
         raise HTTPException(422, f"Body muss ein JSON-Objekt sein, nicht {type(data).__name__}")
     return data
 
-DEFAULT_DB = "/Users/dwfb/nullaufeins/data/bwa.db"
+# nulleins-Codebase: %USERPROFILE%\nullaufeins (Windows) bzw. ~/nullaufeins.
+# Per Umgebungsvariable NULLEINS_HOME ueberschreibbar.
+NULLEINS_HOME = Path(os.environ.get("NULLEINS_HOME", Path.home() / "nullaufeins"))
+DEFAULT_DB = str(NULLEINS_HOME / "data" / "bwa.db")
 
 # Reihenfolge wie im KER-Blatt (lib/bwa.ts).
 INPUT_FIELDS: list[tuple[str, str, str]] = [
@@ -123,11 +126,11 @@ def _db_path() -> Path:
 
 
 def _invoices_db_path() -> Path:
-    return Path(os.environ.get("NULLEINS_INVOICES_DB", "/Users/dwfb/nullaufeins/data/invoices.db"))
+    return Path(os.environ.get("NULLEINS_INVOICES_DB", NULLEINS_HOME / "data" / "invoices.db"))
 
 
 def _invoice_files_dir() -> Path:
-    return Path(os.environ.get("NULLEINS_INVOICE_FILES", "/Users/dwfb/nullaufeins/data/invoice-files"))
+    return Path(os.environ.get("NULLEINS_INVOICE_FILES", NULLEINS_HOME / "data" / "invoice-files"))
 
 
 def _ensure_source_column(con: sqlite3.Connection) -> None:
@@ -158,7 +161,7 @@ def _load_month(cur: sqlite3.Cursor, month: str) -> dict[str, int]:
 #   Ausgaben   -> sonstigeKosten (Sonstige Kosten)
 
 RECEIPT_DIR = Path(os.environ.get("NULLEINS_DAILY_RECEIPTS",
-                                  "/Users/dwfb/nullaufeins/data/daily-receipts"))
+                                  NULLEINS_HOME / "data" / "daily-receipts"))
 DAILY_MIME = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
               ".png": "image/png", ".webp": "image/webp", ".heic": "image/heic"}
 
@@ -715,11 +718,13 @@ async def invoice_detail(invoice_id: str, pdf: bool = Query(False)):
         detail["payment"] = dict(match) if match else None
         detail["filename"] = None
         detail["mimeType"] = "application/pdf"
+        detail["filePath"] = None
         f = con.execute(
             "SELECT filename FROM invoice_files WHERE email_id = ?", (invoice_id,)
         ).fetchone()
         if f:
             detail["filename"] = f["filename"]
+            detail["filePath"] = str(_invoice_files_dir() / f["filename"])
             if f["filename"].lower().endswith((".jpg", ".jpeg")):
                 detail["mimeType"] = "image/jpeg"
             elif f["filename"].lower().endswith(".png"):

@@ -299,7 +299,9 @@ function RechnungenTab({ reloadKey }) {
 
   function revealPdf() {
     if (!detail?.filename) return
-    void _os.revealPath(`/Users/dwfb/nullaufeins/data/invoice-files/${detail.filename}`)
+    // Backend liefert den absoluten Pfad (plattformunabhängig); Fallback: alter Pfad.
+    const p = detail.filePath || `/Users/dwfb/nullaufeins/data/invoice-files/${detail.filename}`
+    void _os.revealPath(p)
   }
 
   async function saveMeta() {

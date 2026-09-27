@@ -47,10 +47,11 @@ load_env()
 
 TOKEN = os.environ.get("PLUTOS_TELEGRAM_TOKEN", "")
 ALLOWED = {int(x) for x in os.environ.get("PLUTOS_ALLOWED_CHAT_IDS", "8950251701").split(",") if x.strip()}
-INVOICES_DB = Path(os.environ.get("NULLEINS_INVOICES_DB", "/Users/dwfb/nullaufeins/data/invoices.db"))
-FILES_DIR = Path(os.environ.get("NULLEINS_INVOICE_FILES", "/Users/dwfb/nullaufeins/data/invoice-files"))
-BWA_DB = Path(os.environ.get("NULLEINS_BWA_DB", "/Users/dwfb/nullaufeins/data/bwa.db"))
-DAILY_RECEIPTS_DIR = Path(os.environ.get("NULLEINS_DAILY_RECEIPTS", "/Users/dwfb/nullaufeins/data/daily-receipts"))
+_HOME = Path(os.environ.get("NULLEINS_HOME", Path.home() / "nullaufeins"))
+INVOICES_DB = Path(os.environ.get("NULLEINS_INVOICES_DB", _HOME / "data" / "invoices.db"))
+FILES_DIR = Path(os.environ.get("NULLEINS_INVOICE_FILES", _HOME / "data" / "invoice-files"))
+BWA_DB = Path(os.environ.get("NULLEINS_BWA_DB", _HOME / "data" / "bwa.db"))
+DAILY_RECEIPTS_DIR = Path(os.environ.get("NULLEINS_DAILY_RECEIPTS", _HOME / "data" / "daily-receipts"))
 DAILY_EXTS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic"}
 POLL = int(os.environ.get("PLUTOS_POLL_SECONDS", "3"))
 

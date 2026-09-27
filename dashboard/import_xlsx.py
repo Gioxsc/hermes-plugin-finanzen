@@ -5,7 +5,7 @@ import openpyxl
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
 from report_db import connect
 
-XLSX = "/Users/dwfb/Downloads/BWA_Scialdone_August_2026.xlsx"
+XLSX = sys.argv[1] if len(sys.argv) > 1 else "BWA_Scialdone_August_2026.xlsx"  # Pfad als Argument übergeben
 MONTH = "2026-08"
 
 VV_FIELD_MAP = {

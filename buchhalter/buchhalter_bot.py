@@ -169,7 +169,7 @@ def run_cycle(invoices_db: str, auto_rules: bool = False, dry_run: bool = True) 
 
 # --- Bot-Laufzeit -------------------------------------------------------------
 
-INVOICES_DB = os.environ.get("NULLEINS_INVOICES_DB", "/Users/dwfb/nullaufeins/data/invoices.db")
+INVOICES_DB = os.environ.get("NULLEINS_INVOICES_DB", str(Path.home() / "nullaufeins" / "data" / "invoices.db"))
 AUTO_RULES = os.environ.get("BUCHHALTER_AUTO_RULES", "0") == "1"
 POLL = int(os.environ.get("BUCHHALTER_POLL_SECONDS", "120"))
 TELEGRAM_TOKEN = os.environ.get("PLUTOS_TELEGRAM_TOKEN", "")
