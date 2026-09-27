@@ -1,18 +1,13 @@
 /**
- * Finanzen — BWA-Dashboard (nulleins) als Tab in der Hermes Desktop App.
- * UI folgt 1:1 dem nulleins BwaSection-Layout: links die KER-Erfassungsgruppen
- * (editierbar), rechts Live-Ergebnis + Kostenarten-Donut. Speichern schreibt
- * über das Plugin-Backend direkt in data/bwa.db (dieselbe Tabelle wie nulleins).
- *
- * Excel/Drucken öffnen nulleins im Browser.
+ * Finanzen — Buchhaltungs-Dashboard (Tagebuch, BWA, Rechnungen, Vorschläge,
+ * SuSa, OPOS, Vorjahresvergleich) als Seite in der Hermes Desktop App.
+ * Alle Daten laufen über das Plugin-Backend (dashboard/plugin_api.py →
+ * /api/plugins/finanzen). Excel-Export und Drucken laufen lokal, ohne nulleins.
  */
 
 import { cn, host, PALETTE_AREA, ROUTES_AREA, SIDEBAR_NAV_AREA } from '@hermes/plugin-sdk'
 import { jsx, jsxs, Fragment } from 'react/jsx-runtime'
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-// nulleins Dev-Server (npm run dev, Port 4100) — Excel/Drucken leiten dorthin weiter.
-const NULLEINS_BASE = 'http://localhost:4100'
 
 const eur = (cents) =>
   (Number(cents) / 100).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -37,6 +32,56 @@ function parseGermanNumber(raw) {
   else n = Number(t.replace(/[.,]/g, ''))
   return Number.isFinite(n) ? Math.round(n * 100) : null
 }
+
+/** Deutscher Betrag -> Euro (Float) für SuSa/OPOS (dort wird in Euro gespeichert). */
+function parseEuro(raw) {
+  const c = parseGermanNumber(raw)
+  return c == null ? null : c / 100
+}
+
+function errText(e) {
+  const m = String(e?.message ?? e)
+  const detail = /"detail"\s*:\s*"([^"]+)"/.exec(m)
+  return detail ? detail[1] : m
+}
+
+/** base64 -> Datei-Download (Electron zeigt den Speichern-Dialog). */
+function downloadBase64(filename, base64, mime) {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10000)
+}
+
+/** HTML in einem unsichtbaren iframe drucken (System-Druckdialog / PDF). */
+function printHtml(title, bodyHtml) {
+  const frame = document.createElement('iframe')
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;'
+  document.body.appendChild(frame)
+  const doc = frame.contentDocument
+  doc.open()
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>
+    body{font:12px/1.4 -apple-system,Segoe UI,Arial,sans-serif;color:#000;margin:24px}
+    h1{font-size:16px;margin:0 0 12px}h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 4px;color:#555}
+    table{width:100%;border-collapse:collapse}td{padding:3px 6px;border-bottom:1px solid #ddd}
+    td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}tr.s td{font-weight:700;border-top:1px solid #000}
+  </style></head><body>${bodyHtml}</body></html>`)
+  doc.close()
+  setTimeout(() => {
+    try { frame.contentWindow.focus(); frame.contentWindow.print() } finally {
+      setTimeout(() => frame.remove(), 1000)
+    }
+  }, 150)
+}
+
+const htmlEsc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 
 function computeBwa(cents) {
   const g = (k) => (Number.isFinite(cents[k]) ? cents[k] : 0)
@@ -105,6 +150,24 @@ function StyleOnce() {
 .fz-chip:hover{opacity:1;background:var(--chrome-action-hover);}
 .fz-chip--active{opacity:1;border-color:var(--ui-accent);color:var(--ui-accent);
   background:color-mix(in srgb,var(--ui-accent) 12%,transparent);font-weight:600;}
+.fz-root input,.fz-root select{color:inherit;outline:none;}
+.fz-root input:focus,.fz-root select:focus{border-color:var(--ui-accent);}
+.fz-root select option{background:var(--ui-bg-editor,Canvas);color:var(--ui-text,CanvasText);}
+/* Fallbacks für Utility-Klassen, die im App-CSS nicht vorkommen */
+.fz-root .text-\[8px\]{font-size:8px}.fz-root .text-\[10px\]{font-size:10px}.fz-root .text-\[11px\]{font-size:11px}
+.fz-root .text-\[12px\]{font-size:12px}.fz-root .text-\[18px\]{font-size:18px}
+.fz-root .tracking-\[0\.06em\]{letter-spacing:.06em}.fz-root .tracking-\[0\.08em\]{letter-spacing:.08em}.fz-root .tracking-\[0\.1em\]{letter-spacing:.1em}
+.fz-root .mb-1\.5{margin-bottom:.375rem}.fz-root .gap-y-1\.5{row-gap:.375rem}.fz-root .gap-1\.5{gap:.375rem}.fz-root .gap-0\.5{gap:.125rem}
+.fz-root .gap-\[2px\]{gap:2px}.fz-root .gap-\[3px\]{gap:3px}
+.fz-root .py-0\.5{padding-top:.125rem;padding-bottom:.125rem}.fz-root .py-1\.5{padding-top:.375rem;padding-bottom:.375rem}.fz-root .px-1\.5{padding-left:.375rem;padding-right:.375rem}
+.fz-root .h-1\.5{height:.375rem}.fz-root .w-1\.5{width:.375rem}
+.fz-root .border-\(--ui-stroke-secondary\){border-color:var(--ui-stroke-secondary)}
+.fz-root .border-\(--ui-accent\){border-color:var(--ui-accent)}
+.fz-root .hover\:bg-\(--chrome-action-hover\):hover{background:var(--chrome-action-hover)}
+.fz-root .bg-\(--chrome-action-hover\){background:var(--chrome-action-hover)}
+.fz-root .text-\(--ui-accent\){color:var(--ui-accent)}
+.fz-root .first\:border-t-0:first-child{border-top-width:0}
+.fz-root .border-t{border-top-style:solid}.fz-root .border{border-style:solid}
 ` })
 }
 
@@ -135,7 +198,7 @@ function GroupBlock(title, fields, values, setValue) {
         }, f.key)),
       }),
     ],
-  })
+  }, title)
 }
 
 /** SVG-Donut: Segmente als stroke-dasharray-Kreise, Zentrum = Monatssumme. */
@@ -196,7 +259,7 @@ function Card(title, badge, children) {
       ] }),
       children,
     ],
-  })
+  }, title)
 }
 
 // --- Untertab Rechnungen (Aufbau wie Beleg-Manager-Screenshot) --------------
@@ -222,7 +285,7 @@ function KVRow(labelText, valueNode) {
   return jsxs('div', { className: 'flex justify-between gap-3 py-0.5', children: [
     jsx('span', { className: 'shrink-0 text-[11px] opacity-60', children: labelText }),
     jsx('span', { className: 'min-w-0 truncate text-right font-mono text-[11px]', title: typeof valueNode === 'string' ? valueNode : undefined, children: valueNode }),
-  ] })
+  ] }, labelText)
 }
 
 function RechnungenTab({ reloadKey }) {
@@ -263,11 +326,12 @@ function RechnungenTab({ reloadKey }) {
     setUploading(true)
     setErr(null)
     try {
-      const buf = await file.arrayBuffer()
-      let binary = ''
-      const bytes = new Uint8Array(buf)
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
-      const dataBase64 = btoa(binary)
+      const dataBase64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      })
       const res = await _rest('/invoices/upload', {
         method: 'POST',
         body: JSON.stringify({
@@ -299,9 +363,7 @@ function RechnungenTab({ reloadKey }) {
 
   function revealPdf() {
     if (!detail?.filename) return
-    // Backend liefert den absoluten Pfad (plattformunabhängig); Fallback: alter Pfad.
-    const p = detail.filePath || `/Users/dwfb/nullaufeins/data/invoice-files/${detail.filename}`
-    void _os.revealPath(p)
+    if (detail.filePath) void _os.revealPath(detail.filePath)
   }
 
   async function saveMeta() {
@@ -360,7 +422,7 @@ function RechnungenTab({ reloadKey }) {
     jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
       jsx('button', { type: 'button', className: btnPrimary, disabled: uploading, onClick: () => fileRef.current?.click(),
         children: jsxs('span', { className: 'inline-flex items-center gap-1.5', children: [
-          jsx('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+          jsxs('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
             strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, children: [
             jsx('path', { d: 'M9.5 2 H4.8 C4.25 2 3.8 2.45 3.8 3 V13 C3.8 13.55 4.25 14 4.8 14 H11.2 C11.75 14 12.2 13.55 12.2 13 V4.7 Z' }),
             jsx('path', { d: 'M9.5 2 V4.7 H12.2' }),
@@ -371,7 +433,7 @@ function RechnungenTab({ reloadKey }) {
         ] }) }),
       jsx('input', { ref: fileRef, type: 'file', accept: 'application/pdf,image/*', hidden: true,
         onChange: (e) => { onUploadFile(e.target.files?.[0]); e.target.value = '' } }),
-      jsxs('div', { className: 'flex flex-wrap items-center gap-1.5', children: filterChips }),
+      jsx('div', { className: 'flex flex-wrap items-center gap-1.5', children: filterChips }),
       jsx('button', { type: 'button', className: chipCls(false), onClick: () => setSortAsc((s) => !s),
         children: sortAsc ? 'Datum ↑' : 'Datum ↓' }),
       jsx('div', { className: 'ml-auto' }),
@@ -388,7 +450,7 @@ function RechnungenTab({ reloadKey }) {
         !list
           ? jsx('div', { className: 'text-[12px] opacity-60', children: 'Lade Rechnungen …' })
           : jsxs('div', { className: 'flex flex-col', children: [
-              jsx('table', { className: 'w-full text-[11px]', children: [
+              jsxs('table', { className: 'w-full text-[11px]', children: [
                 jsx('thead', { children: jsxs('tr', { className: 'text-left font-mono text-[10px] uppercase tracking-[0.08em] opacity-50', children: [
                   jsx('th', { className: 'py-1 pr-2 font-normal', children: 'Dokument' }),
                   jsx('th', { className: 'py-1 pr-2 text-right font-normal', children: 'Betrag' }),
@@ -431,7 +493,7 @@ function RechnungenTab({ reloadKey }) {
                 jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
                   jsx('div', { className: 'font-medium', children: detail.vendor }),
                   jsxs('div', { className: 'flex items-center gap-1', children: [
-                    jsx('button', { type: 'button', className: btnCls, title: 'PDF im Finder zeigen', onClick: () => revealPdf(), children: 'Ablage' }),
+                    jsx('button', { type: 'button', className: btnCls, title: 'Datei im Explorer zeigen', onClick: () => revealPdf(), children: 'Ablage' }),
                     jsx('button', { type: 'button', className: btnCls, onClick: () => { setSelected(null); setDetail(null); setEditMode(null) }, children: '✕' }),
                   ] }),
                 ] }),
@@ -458,7 +520,7 @@ function RechnungenTab({ reloadKey }) {
                         ], }, key)),
                       jsxs('label', { className: 'flex items-center justify-between gap-2', children: [
                         jsx('span', { className: 'text-[11px] opacity-60', children: 'Quelle' }),
-                        jsx('select', { value: form.source ?? detail.source, onChange: (e) => setForm((f) => ({ ...f, source: e.target.value })),
+                        jsxs('select', { value: form.source ?? detail.source, onChange: (e) => setForm((f) => ({ ...f, source: e.target.value })),
                           className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 font-mono text-[11px]', children: [
                             jsx('option', { value: 'email', children: 'E-Mail' }),
                             jsx('option', { value: 'telegram', children: 'Telegram' }),
@@ -549,7 +611,7 @@ function DayChart(days, today) {
   const max = Math.max(1, ...days.map((d) => Math.max(d.incomeCents, d.expenseCents)))
   const H = 70
   const dayRows = days.slice().sort((a, b) => a.date.localeCompare(b.date))
-  return jsxs('div', { className: 'flex items-end gap-[3px] overflow-x-auto pb-1', role: 'img', 'aria-label': 'Täglich Einnahmen und Ausgaben', children: dayRows.map((d) => {
+  return jsx('div', { className: 'flex items-end gap-[3px] overflow-x-auto pb-1', role: 'img', 'aria-label': 'Täglich Einnahmen und Ausgaben', children: dayRows.map((d) => {
     const isToday = d.date === today
     const hIn = Math.max(1, Math.round((d.incomeCents / max) * (H / 2)))
     const hOut = Math.max(1, Math.round((d.expenseCents / max) * (H / 2)))
@@ -569,7 +631,7 @@ function BigStat(labelText, cents, accent) {
   return jsxs('div', { className: 'flex flex-col gap-1 rounded-lg border border-(--ui-stroke-secondary) p-3', children: [
     jsx('div', { className: 'font-mono text-[10px] uppercase tracking-[0.1em] opacity-50', children: labelText }),
     jsx('div', { className: 'font-mono text-[18px] font-semibold', style: accent ? { color: 'var(--ui-accent)' } : undefined, children: eur(cents) }),
-  ] })
+  ] }, labelText)
 }
 
 function TagebuchTab() {
@@ -682,9 +744,9 @@ function TagebuchTab() {
 
     // Dashboard: Einnahmen/Ausgaben des gesamten Monats bis heute
     jsxs(Fragment, { children: [
-      jsxs('div', { className: 'font-mono text-[10px] uppercase tracking-[0.1em] opacity-50',
+      jsx('div', { className: 'font-mono text-[10px] uppercase tracking-[0.1em] opacity-50',
         children: isToday && month === thisDay().slice(0, 7) ? 'Monat bis heute' : data ? data.monthLabel : month }),
-      jsx('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }, children: [
+      jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }, children: [
         BigStat('Verdient', mtd.incomeCents, true),
         BigStat('Ausgegeben', mtd.expenseCents),
         BigStat('Saldo', mtd.netCents),
@@ -718,7 +780,7 @@ function TagebuchTab() {
           ] }),
 
           jsxs('div', { className: 'mt-1 border-t border-(--ui-stroke-secondary) pt-2', children: [
-            jsx('div', { className: 'mb-1 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.08em] opacity-50', children: [
+            jsxs('div', { className: 'mb-1 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.08em] opacity-50', children: [
               jsx('span', { children: `Buchungen dieses Tags · ${dayAgg.items.length}` }),
               dayAgg.items.length ? jsx('span', { children: `+${eur(dayAgg.incomeCents)} / -${eur(dayAgg.expenseCents)}` }) : null,
             ] }),
@@ -750,15 +812,16 @@ function TagebuchTab() {
 
 const eur2 = (n) => Number(n || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-function EditableCell({ value, onCommit, numeric, width }) {
+function EditableCell({ value, onCommit, numeric, width, cents }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
+  const cancelRef = useRef(false)
   if (!editing) {
     return jsx('td', {
       className: cn('py-1 pr-2 cursor-text hover:bg-(--chrome-action-hover)', numeric && 'text-right font-mono whitespace-nowrap'),
       style: width ? { maxWidth: width } : undefined,
       title: 'Klicken zum Bearbeiten',
-      onClick: () => { setDraft(String(value ?? '')); setEditing(true) },
+      onClick: () => { setDraft(numeric ? eur2(value) : String(value ?? '')); setEditing(true) },
       children: numeric ? eur2(value) : (value || ''),
     })
   }
@@ -767,30 +830,46 @@ function EditableCell({ value, onCommit, numeric, width }) {
     value: draft,
     inputMode: numeric ? 'decimal' : 'text',
     onChange: (e) => setDraft(e.target.value),
-    onBlur: () => { setEditing(false); onCommit(numeric ? parseGermanNumber(draft) : draft) },
+    onBlur: () => { setEditing(false); if (cancelRef.current) { cancelRef.current = false; return } onCommit(numeric ? (cents ? parseGermanNumber(draft) : parseEuro(draft)) : draft) },
     onKeyDown: (e) => {
-      if (e.key === 'Enter') { setEditing(false); onCommit(numeric ? parseGermanNumber(draft) : draft) }
-      if (e.key === 'Escape') setEditing(false)
+      if (e.key === 'Enter') { e.currentTarget.blur() }
+      if (e.key === 'Escape') { cancelRef.current = true; e.currentTarget.blur() }
     },
     className: 'w-full rounded border border-(--ui-accent) bg-transparent px-1 py-0.5 text-right font-mono text-[11px]',
   }) })
 }
 
-function MonthPicker({ months, month, onChange, allowCurrent }) {
-  const list = useMemo(() => {
-    const ms = (months ?? []).slice()
-    const cur = thisMonth()
-    if (allowCurrent && !ms.includes(cur)) ms.push(cur)
-    ms.sort()
-    return ms
-  }, [months, allowCurrent])
-  return jsx('select', {
-    value: month ?? '',
-    onChange: (e) => onChange(e.target.value),
-    className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 font-mono text-[12px]',
-    'aria-label': 'Monat wählen',
-    children: list.map((m) => jsx('option', { value: m, children: label(m) }, m)),
-  })
+/** Monat + Jahr frei wählbar (alle 12 Monate, Jahre ab 2000 bzw. frühestem
+ *  Datenjahr bis nächstes Jahr), dazu ◀ ▶ zum Blättern. Monate mit Daten
+ *  sind im Monats-Dropdown mit • markiert. */
+function MonthPicker({ months, month, onChange }) {
+  const cur = month || thisMonth()
+  const [y, m] = cur.split('-').map(Number)
+  const withData = new Set(months ?? [])
+  const nowY = new Date().getFullYear()
+  const dataYears = [...withData].map((x) => Number(String(x).slice(0, 4))).filter(Number.isFinite)
+  const minY = Math.min(2000, y, ...dataYears)
+  const maxY = Math.max(nowY + 1, y, ...dataYears)
+  const years = []
+  for (let yy = maxY; yy >= minY; yy--) years.push(yy)
+  const mk = (yy, mm) => `${yy}-${String(mm).padStart(2, '0')}`
+  const sel = 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 font-mono text-[12px]'
+  return jsxs('div', { className: 'flex items-center gap-1.5', children: [
+    jsx('button', { type: 'button', className: 'fz-btn', title: 'Vorheriger Monat', onClick: () => onChange(shiftMonth(cur, -1)), children: '◀' }),
+    jsx('select', {
+      value: String(m), className: sel, 'aria-label': 'Monat wählen',
+      onChange: (e) => onChange(mk(y, Number(e.target.value))),
+      children: MONATE.map((name, i) => jsx('option', { value: String(i + 1),
+        children: withData.has(mk(y, i + 1)) ? `${name} •` : name }, name)),
+    }),
+    jsx('select', {
+      value: String(y), className: sel, 'aria-label': 'Jahr wählen',
+      onChange: (e) => onChange(mk(Number(e.target.value), m)),
+      children: years.map((yy) => jsx('option', { value: String(yy), children: String(yy) }, yy)),
+    }),
+    jsx('button', { type: 'button', className: 'fz-btn', title: 'Nächster Monat', onClick: () => onChange(shiftMonth(cur, 1)), children: '▶' }),
+    cur !== thisMonth() ? jsx('button', { type: 'button', className: 'fz-btn', onClick: () => onChange(thisMonth()), children: 'Heute' }) : null,
+  ] })
 }
 
 function SusaTab({ reloadKey }) {
@@ -798,7 +877,7 @@ function SusaTab({ reloadKey }) {
   const [err, setErr] = useState(null)
   const [adding, setAdding] = useState(false)
   const [form, setForm] = useState({})
-  const [blatt, setBlatt] = useState(1)
+  const [blattSel, setBlatt] = useState(null)
   const [query, setQuery] = useState('')
   const [nurBelegt, setNurBelegt] = useState(true)
 
@@ -810,7 +889,7 @@ function SusaTab({ reloadKey }) {
   useEffect(() => { load(data?.month) }, [reloadKey])
 
   async function commit(id, field, value) {
-    if (value == null || value === '' || value === 0 && field === 'beschriftung') return
+    if (value == null || (typeof value === 'string' && value.trim() === '')) return
     const body = field === 'konto' ? { konto: value } : field === 'beschriftung' ? { beschriftung: value }
       : field === 'eb' ? { ebWert: value } : field === 'sollM' ? { sollMonat: value }
       : field === 'habenM' ? { habenMonat: value } : field === 'sollK' ? { sollKum: value }
@@ -834,11 +913,11 @@ function SusaTab({ reloadKey }) {
         month: data.month,
         konto: form.konto,
         beschriftung: form.beschriftung,
-        ebWert: parseGermanNumber(form.eb ?? '') ?? 0,
-        sollMonat: parseGermanNumber(form.sollM ?? '') ?? 0,
-        habenMonat: parseGermanNumber(form.habenM ?? '') ?? 0,
-        sollKum: parseGermanNumber(form.sollK ?? '') ?? 0,
-        habenKum: parseGermanNumber(form.habenK ?? '') ?? 0,
+        ebWert: parseEuro(form.eb ?? '') ?? 0,
+        sollMonat: parseEuro(form.sollM ?? '') ?? 0,
+        habenMonat: parseEuro(form.habenM ?? '') ?? 0,
+        sollKum: parseEuro(form.sollK ?? '') ?? parseEuro(form.sollM ?? '') ?? 0,
+        habenKum: parseEuro(form.habenK ?? '') ?? parseEuro(form.habenM ?? '') ?? 0,
       }) })
       setAdding(false); setForm({})
       load(data.month)
@@ -852,7 +931,8 @@ function SusaTab({ reloadKey }) {
 
   const BLATT_LABELS = { 1: 'Blatt 1 · Kl. 0–3', 2: 'Blatt 2 · Kl. 3–6', 3: 'Blatt 3 · Kl. 6–9', 4: 'Kreditoren' }
   const all = data.entries ?? []
-  const blatts = [...new Set(all.map((e) => e.blatt))]
+  const blatts = [...new Set(all.map((e) => e.blatt))].sort()
+  const blatt = blatts.includes(blattSel) ? blattSel : (blatts[0] ?? 1)
   const q = query.trim().toLowerCase()
   const isBelegt = (e) => ['eb_wert', 'soll_monat', 'haben_monat', 'soll_kum', 'haben_kum']
     .some((f) => Math.abs(Number(e[f] || 0)) > 0.004)
@@ -888,7 +968,7 @@ function SusaTab({ reloadKey }) {
 
   return jsxs('div', { className: 'flex flex-col gap-3', children: [
     jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-      jsx(MonthPicker, { months: data.months, month: data.month, onChange: (m) => load(m), allowCurrent: true }, 'mp'),
+      jsx(MonthPicker, { months: data.months, month: data.month, onChange: (m) => load(m) }, 'mp'),
       jsx('button', { type: 'button', className: 'fz-btn', onClick: () => setAdding((a) => !a), children: adding ? 'Abbrechen' : '+ Konto' }),
       jsx('div', { className: 'ml-auto' }),
       jsx('input', { value: query, onChange: (e) => setQuery(e.target.value), placeholder: 'Konto / Text suchen …',
@@ -911,7 +991,7 @@ function SusaTab({ reloadKey }) {
       jsx('button', { type: 'button', className: 'fz-btn fz-btn--primary', onClick: () => void addRow(), children: 'Hinzufügen' }),
     ] }) : null,
     jsx('div', { className: 'rounded-lg border border-(--ui-stroke-secondary) p-3', children:
-      jsx('table', { className: 'w-full text-[11px]', children: [
+      jsxs('table', { className: 'w-full text-[11px]', children: [
         jsx('thead', { children: tableHead }),
         jsx('tbody', { children: rows.map((r, i) => r.type === 'klasse'
           ? jsxs('tr', { children: [
@@ -943,6 +1023,9 @@ function SusaTab({ reloadKey }) {
                     onClick: () => void removeRow(r.e.id), children: '✕' }) }),
               ] }, r.e.id)) }),
       ] }) }),
+    !rows.length ? jsx('div', { className: 'text-[12px] opacity-60', children: all.length
+      ? 'Keine passenden Konten — Filter „Nur belegte Konten" oder Suche anpassen.'
+      : `Noch keine Konten für ${label(data.month)} — über „+ Konto" anlegen oder einen Vorschlag buchen.` }) : null,
     jsx('div', { className: 'font-mono text-[10px] opacity-50', children: 'Zellen anklicken zum Bearbeiten · Enter bestätigt, Esc bricht ab · Summen werden automatisch berechnet' }),
   ] })
 }
@@ -974,7 +1057,7 @@ function OposTab({ reloadKey }) {
       await _rest('/report/opos', { method: 'POST', timeoutMs: 8000, body: JSON.stringify({
         month: data.month, konto: form.konto ?? '', beschriftung: form.beschriftung ?? '',
         rechnungsNr: form.rechnungsNr ?? '', datum: form.datum ?? '',
-        faelligkeit: form.faelligkeit ?? '', betrag: parseGermanNumber(form.betrag ?? '') ?? 0,
+        faelligkeit: form.faelligkeit ?? '', betrag: parseEuro(form.betrag ?? '') ?? 0,
         buchungstext: form.buchungstext ?? '',
       }) })
       setAdding(false); setForm({})
@@ -991,7 +1074,7 @@ function OposTab({ reloadKey }) {
 
   return jsxs('div', { className: 'flex flex-col gap-3', children: [
     jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-      jsx(MonthPicker, { months: data.months, month: data.month, onChange: (m) => load(m), allowCurrent: true }, 'mp'),
+      jsx(MonthPicker, { months: data.months, month: data.month, onChange: (m) => load(m) }, 'mp'),
       jsx('button', { type: 'button', className: 'fz-btn', onClick: () => setAdding((a) => !a), children: adding ? 'Abbrechen' : '+ Posten' }),
     ] }),
     err ? jsx('div', { className: 'font-mono text-[11px]', style: { color: '#e5484d' }, children: err }) : null,
@@ -1006,7 +1089,7 @@ function OposTab({ reloadKey }) {
     Card(`Offene Posten · ${data.month ? label(data.month) : ''}`, `${eur2(total)} € offen`,
       !(data.entries ?? []).length
         ? jsx('div', { className: 'text-[12px] opacity-60', children: 'Keine Posten vorhanden — die Liste ist leer.' })
-        : jsx('table', { className: 'w-full text-[11px]', children: [
+        : jsxs('table', { className: 'w-full text-[11px]', children: [
             jsx('thead', { children: jsxs('tr', { className: 'text-left font-mono text-[10px] uppercase tracking-[0.08em] opacity-50', children: [
               ...cols.map(([key, lbl]) => jsx('th', { className: 'py-1 pr-2 font-normal', children: lbl }, key)),
               jsx('th', {}),
@@ -1024,16 +1107,24 @@ function OposTab({ reloadKey }) {
 function VvTab({ reloadKey }) {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
+  const [month, setMonth] = useState(thisMonth())
   useEffect(() => {
-    _rest(`/report/vv?month=${thisMonth()}`, { timeoutMs: 8000 })
+    _rest(`/report/vv?month=${month}`, { timeoutMs: 8000 })
       .then((d) => { setData(d); setErr(null) })
       .catch((e) => setErr(String(e?.message ?? e)))
-  }, [reloadKey])
+  }, [reloadKey, month])
   if (err) return jsx('div', { className: 'text-[12px]', style: { color: '#e5484d' }, children: err })
   if (!data) return jsx('div', { className: 'text-[12px] opacity-60', children: 'Lade Vorjahresvergleich …' })
   const fmtPct = (p) => (p == null ? '—' : `${pct(p)} %`)
+  return jsxs('div', { className: 'flex flex-col gap-3', children: [
+    jsx(MonthPicker, { months: [], month, onChange: setMonth }, 'mp'),
+    VvCard(data, fmtPct),
+  ] })
+}
+
+function VvCard(data, fmtPct) {
   return Card(`Vorjahresvergleich · ${label(data.month)} vs. ${label(data.prevMonth)}`, null,
-    jsx('table', { className: 'w-full text-[11px]', children: [
+    jsxs('table', { className: 'w-full text-[11px]', children: [
       jsx('thead', { children: jsxs('tr', { className: 'text-left font-mono text-[10px] uppercase tracking-[0.08em] opacity-50', children: [
         jsx('th', { className: 'py-1 pr-2 font-normal', children: 'Bezeichnung' }),
         jsx('th', { className: 'py-1 pr-2 text-right font-normal', children: label(data.month) }),
@@ -1170,40 +1261,14 @@ function FinanzenPage() {
   const r = useMemo(() => computeBwa(cents), [cents])
   const cats = useMemo(() => bwaCostCategories(cents), [cents])
 
-  const options = useMemo(() => {
-    const months = (data?.months ?? []).slice()
-    const cur = thisMonth()
-    if (!months.includes(cur)) months.push(cur)
-    months.sort()
-    return months
-  }, [data])
-
   if (error) {
-    const empty = /Noch keine BWA-Monate/i.test(error)
-    if (empty) {
-      return jsx('div', { className: 'p-4 text-sm flex flex-col gap-2', children: [
-        jsx('div', { className: 'font-medium', children: 'Finanzen · BWA' }),
-        jsx('div', { className: 'text-[12px] opacity-60', children:
-          'Noch keine BWA-Monate erfasst. Leg los: Tägliche Einnahmen und Ausgaben im Tab „Tagebuch" erfassen (rollieren automatisch in die Monats-BWA) — oder hier den ersten Monat direkt anlegen.' }),
-        jsx('div', { children: jsx('button', { type: 'button', className: 'fz-btn fz-btn--primary',
-          onClick: async () => {
-            setBusy(true)
-            try {
-              await _rest('/overview', { method: 'POST', timeoutMs: 10000,
-                body: JSON.stringify({ month: thisMonth(), entries: { umsatz: '0' } }) })
-              setMonth(thisMonth())
-              setReloadKey((k) => k + 1)
-            } catch (e) { setError(String(e?.message ?? e)) }
-            setBusy(false)
-          }, children: busy ? 'Lege an …' : `Monat ${label(thisMonth())} anlegen` }) }),
-      ] })
-    }
     return jsx('div', {
       className: 'p-4 text-sm',
       children: jsxs('div', { className: 'flex flex-col gap-2', children: [
         jsx('div', { className: 'font-medium', children: 'Finanzen · BWA' }),
-        jsx('div', { className: 'text-[12px] opacity-60', children: `Backend nicht erreichbar: ${error}` }),
-        jsx('div', { className: 'text-[12px] opacity-60', children: 'Plugin in Capabilities → Plugins aktiv und plugins.enabled in der config.yaml an?' }),
+        jsx('div', { className: 'text-[12px] opacity-60', children: `Backend nicht erreichbar: ${errText(error)}` }),
+        jsx('div', { className: 'text-[12px] opacity-60', children: 'Backend aktivieren: „hermes plugins enable finanzen" ausführen und Hermes Desktop neu starten.' }),
+        jsx('div', { children: jsx('button', { type: 'button', className: 'fz-btn', onClick: () => { setError(null); setReloadKey((k) => k + 1) }, children: '↻ Erneut versuchen' }) }),
       ] }),
     })
   }
@@ -1219,20 +1284,35 @@ function FinanzenPage() {
       setData((d) => ({ ...d, months: res.months ?? d.months }))
       setStatus(`Monat ${label(data.month)} gespeichert`)
       setIsFehler(false)
-    } catch {
+    } catch (e) {
       setIsFehler(true)
-      setStatus('Speichern fehlgeschlagen. Bitte Eingaben prüfen.')
+      setStatus(`Speichern fehlgeschlagen: ${errText(e)}`)
     }
     setBusy(false)
   }
 
-  async function openExternal(url, what) {
-    let ok = false
-    try { ok = await _os.openExternal(url) } catch { ok = false }
-    if (!ok) {
+  async function exportExcel() {
+    try {
+      const d = await _rest(`/bwa/export?month=${data.month}`, { timeoutMs: 15000 })
+      downloadBase64(d.filename, d.dataBase64, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      setIsFehler(false)
+      setStatus(`${d.filename} erstellt`)
+    } catch (e) {
       setIsFehler(true)
-      setStatus(`nulleins nicht erreichbar (${what}) — läuft der Dev-Server auf Port 4100?`)
+      setStatus(`Excel-Export fehlgeschlagen: ${errText(e)}`)
     }
+  }
+
+  function printBwa() {
+    const fieldRows = GROUPS.map((g) => {
+      const fs = (data.fields ?? []).filter((f) => f.group === g)
+      if (!fs.length) return ''
+      return `<h2>${htmlEsc(g)}</h2><table>` + fs.map((f) =>
+        `<tr><td>${htmlEsc(f.label)}</td><td class="n">${eur(cents[f.key] ?? 0)}</td></tr>`).join('') + '</table>'
+    }).join('')
+    const res = '<h2>Ergebnis</h2><table>' + resultRows.map(([l, v, s]) =>
+      `<tr class="${s ? 's' : ''}"><td>${htmlEsc(l)}</td><td class="n">${eur(v)}</td></tr>`).join('') + '</table>'
+    printHtml(`BWA ${label(data.month)}`, `<h1>BWA · ${htmlEsc(label(data.month))}</h1>${fieldRows}${res}`)
   }
 
   const btnCls = 'fz-btn'
@@ -1252,8 +1332,8 @@ function FinanzenPage() {
 
   const actionRow = jsxs('div', { className: 'mt-3 flex flex-wrap items-center gap-2', children: [
     jsx('button', { type: 'button', className: btnPrimary, disabled: busy, onClick: () => void save(), children: busy ? 'Speichere…' : 'Monat speichern' }),
-    jsx('button', { type: 'button', className: btnCls, onClick: () => void openExternal(`${NULLEINS_BASE}/api/finances/bwa/excel?month=${data.month}`, 'Excel herunterladen'), children: 'Excel herunterladen' }),
-    jsx('button', { type: 'button', className: btnCls, onClick: () => void openExternal(`${NULLEINS_BASE}/finanzen`, 'Drucken'), children: 'Drucken' }),
+    jsx('button', { type: 'button', className: btnCls, onClick: () => void exportExcel(), children: 'Excel herunterladen' }),
+    jsx('button', { type: 'button', className: btnCls, onClick: () => printBwa(), children: 'Drucken' }),
     status ? jsx('span', { className: 'font-mono text-[10px]', style: isFehler ? { color: '#e5484d' } : { opacity: 0.5 }, children: status }) : null,
   ] })
 
@@ -1266,7 +1346,7 @@ function FinanzenPage() {
   }, key)
 
   return jsxs('div', {
-    className: 'flex h-full flex-col gap-4 overflow-auto p-4 text-sm',
+    className: 'fz-root flex h-full flex-col gap-4 overflow-auto p-4 text-sm',
     children: [
       jsxs('div', { className: 'flex flex-wrap items-center gap-3', children: [
         jsx('div', { className: 'font-medium', children: 'Finanzen' }),
@@ -1297,14 +1377,8 @@ function FinanzenPage() {
                   ? jsx(VorschlaegeTab, { reloadKey }, `p${reloadKey}`)
                   : jsxs(Fragment, { children: [
       jsxs('div', { className: 'flex flex-wrap items-center gap-3', children: [
-        jsx('select', {
-          value: data.month,
-          onChange: (e) => setMonth(e.target.value),
-          className: 'rounded border border-(--ui-stroke-secondary) bg-transparent px-2 py-1 font-mono text-[12px]',
-          'aria-label': 'Monat und Jahr wählen',
-          children: options.map((m) => jsx('option', { value: m, children: label(m) }, m)),
-        }),
-        jsx('div', { className: 'text-[11px] opacity-50', children: 'nulleins · data/bwa.db' }),
+        jsx(MonthPicker, { months: data.months, month: data.month, onChange: (m) => setMonth(m) }, 'mp'),
+        jsx('div', { className: 'text-[11px] opacity-50', children: '• = Monat mit Daten' }),
       ] }),
 
       jsxs('div', {

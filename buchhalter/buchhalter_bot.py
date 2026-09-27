@@ -169,17 +169,28 @@ def run_cycle(invoices_db: str, auto_rules: bool = False, dry_run: bool = True) 
 
 # --- Bot-Laufzeit -------------------------------------------------------------
 
-INVOICES_DB = os.environ.get("NULLEINS_INVOICES_DB", str(Path.home() / "nullaufeins" / "data" / "invoices.db"))
+INVOICES_DB = os.environ.get("NULLEINS_INVOICES_DB", str(Path(os.environ.get("NULLEINS_HOME", Path.home() / "nullaufeins")) / "data" / "invoices.db"))
 AUTO_RULES = os.environ.get("BUCHHALTER_AUTO_RULES", "0") == "1"
 POLL = int(os.environ.get("BUCHHALTER_POLL_SECONDS", "120"))
 TELEGRAM_TOKEN = os.environ.get("PLUTOS_TELEGRAM_TOKEN", "")
 ALLOWED = {int(x) for x in os.environ.get("PLUTOS_ALLOWED_CHAT_IDS", "8950251701").split(",") if x.strip()}
 
 
+def _hermes_home() -> Path:
+    """Hermes-Datenordner: $HERMES_HOME, sonst %LOCALAPPDATA%\\hermes (Windows) bzw. ~/.hermes."""
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env)
+    local = os.environ.get("LOCALAPPDATA")
+    if os.name == "nt" and local and (Path(local) / "hermes").is_dir():
+        return Path(local) / "hermes"
+    return Path.home() / ".hermes"
+
+
 def load_env() -> None:
-    env_file = Path.home() / ".hermes" / ".env"
+    env_file = _hermes_home() / ".env"
     if env_file.exists():
-        for line in env_file.read_text().splitlines():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")

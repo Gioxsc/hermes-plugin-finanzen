@@ -10,8 +10,8 @@ Konfiguration über Umgebungsvariablen (oder ~/.hermes/.env):
   PLUTOS_TELEGRAM_TOKEN   Bot-Token vom BotFather (Pflicht)
   PLUTOS_ALLOWED_CHAT_IDS erlaubte Telegram-Chat-IDs, Komma-getrennt
                           (Default: 8950251701)
-  NULLEINS_INVOICES_DB    Default: /Users/dwfb/nullaufeins/data/invoices.db
-  NULLEINS_INVOICE_FILES  Default: /Users/dwfb/nullaufeins/data/invoice-files
+  NULLEINS_INVOICES_DB    Default: <Home>/nullaufeins/data/invoices.db
+  NULLEINS_INVOICE_FILES  Default: <Home>/nullaufeins/data/invoice-files
   PLUTOS_POLL_SECONDS     Poll-Intervall (Default 3)
 """
 
@@ -30,13 +30,24 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+def _hermes_home() -> Path:
+    """Hermes-Datenordner: $HERMES_HOME, sonst %LOCALAPPDATA%\\hermes (Windows) bzw. ~/.hermes."""
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env)
+    local = os.environ.get("LOCALAPPDATA")
+    if os.name == "nt" and local and (Path(local) / "hermes").is_dir():
+        return Path(local) / "hermes"
+    return Path.home() / ".hermes"
+
+
 HOME = Path.home()
-ENV_FILE = HOME / ".hermes" / ".env"
+ENV_FILE = _hermes_home() / ".env"
 
 
 def load_env() -> None:
     if ENV_FILE.exists():
-        for line in ENV_FILE.read_text().splitlines():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
@@ -340,7 +351,7 @@ def handle_update(update: dict) -> None:
 
 def main() -> None:
     if not TOKEN:
-        print("PLUTOS_TELEGRAM_TOKEN fehlt (in ~/.hermes/.env setzen).", flush=True)
+        print("PLUTOS_TELEGRAM_TOKEN fehlt (in <HERMES_HOME>/.env setzen).", flush=True)
         sys.exit(1)
     if not INVOICES_DB.exists():
         print(f"Invoices-DB fehlt: {INVOICES_DB}", flush=True)

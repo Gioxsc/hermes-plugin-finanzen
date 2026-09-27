@@ -2,9 +2,9 @@
 """Monatsabschluss: erzeugt aus bwa.db + report.db eine Quellen-Notiz im Obsidian Vault.
 
 Nutzung:
-    python3 monatsabschluss.py 2026-09            # konkreter Monat
+    python3 monatsabschluss.py 2026-09            # konkreter Monat (Windows: python statt python3)
     python3 monatsabschluss.py                    # letzter vollständiger Monat
-    python3 --no-gate                             # Notiz schreiben, Vault-Gate überspringen
+    python3 monatsabschluss.py --no-gate                             # Notiz schreiben, Vault-Gate überspringen
 
 Ablauf nach Erzeugung (vom Bot auszuführen):
     cd ~/Documents/nullaufeins
@@ -12,14 +12,16 @@ Ablauf nach Erzeugung (vom Bot auszuführen):
     python3 scripts/wiki_tool.py build && python3 scripts/wiki_tool.py lint && python3 scripts/wiki_tool.py source-lint
     (dann Wiki-Note kompilieren und erneut build + lint)
 """
+import os
 import sqlite3
 import subprocess
 import sys
 from datetime import date
 from pathlib import Path
 
-BWA_DB = Path.home() / "nullaufeins" / "data" / "bwa.db"
-REPORT_DB = Path.home() / ".hermes/plugins/finanzen/dashboard/data/report.db"
+_NULLEINS = Path(os.environ.get("NULLEINS_HOME", Path.home() / "nullaufeins"))
+BWA_DB = Path(os.environ.get("NULLEINS_BWA_DB", _NULLEINS / "data" / "bwa.db"))
+REPORT_DB = Path(__file__).resolve().parent / "dashboard" / "data" / "report.db"
 VAULT = Path.home() / "Documents/nullaufeins"
 SOURCES = VAULT / "Raw/Sources"
 
@@ -49,7 +51,7 @@ def fmt_markdown(month: str, bwa: dict, opos: dict, susa_count: int) -> str:
         f"# BWA Monatsabschluss {month}",
         "",
         f"Automatisch erzeugt am {date.today().isoformat()} aus `data/bwa.db` (bwa_entries) "
-        f"und `~/.hermes/plugins/finanzen/dashboard/data/report.db` (opos_entries, susa_entries) "
+        f"und `<Plugin>/dashboard/data/report.db` (opos_entries, susa_entries) "
         f"des Finanzen-Plugins. Alle Beträge in EUR (Cent-basiert, gerundet auf 2 Nachkommastellen).",
         "",
         "## BWA-Zahlen",

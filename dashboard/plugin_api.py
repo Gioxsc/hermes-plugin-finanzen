@@ -247,14 +247,20 @@ def _ensure_daily_tables(con: sqlite3.Connection) -> None:
     con.commit()
 
 
-def _daily_conn() -> sqlite3.Connection:
-    path = _db_path()
-    if not path.exists():
-        raise HTTPException(404, f"BWA-Datenbank nicht gefunden: {path}")
-    con = sqlite3.connect(str(path))
+def _bwa_conn() -> sqlite3.Connection:
+    """bwa.db öffnen und Schema (bwa_entries + daily_items) sicherstellen."""
+    con = sqlite3.connect(str(_db_path()))
     con.row_factory = sqlite3.Row
+    con.executescript(BWA_SCHEMA)
     _ensure_daily_tables(con)
     return con
+
+
+_daily_conn = _bwa_conn
+
+
+def _current_month() -> str:
+    return datetime.now().strftime("%Y-%m")
 
 
 def _daily_month_sums(cur: sqlite3.Cursor, month: str) -> tuple[int, int]:
@@ -340,28 +346,23 @@ def month_label_de(month: str) -> str:
 
 
 def _all_months(cur: sqlite3.Cursor) -> list[str]:
-    rows = cur.execute("SELECT DISTINCT month FROM bwa_entries ORDER BY month").fetchall()
-    return [r[0] for r in rows]
+    """Monate mit BWA-Werten ODER Tagesbuchungen."""
+    rows = cur.execute(
+        "SELECT month FROM bwa_entries UNION "
+        "SELECT DISTINCT substr(date, 1, 7) FROM daily_items ORDER BY 1").fetchall()
+    return [r[0] for r in rows if r[0]]
 
 
 @router.get("/overview")
 async def overview(month: Optional[str] = Query(None)):
     """Monat + Jahresübersicht in einem Aufruf (alles Cent)."""
-    if not _db_path().exists():
-        raise HTTPException(404, f"BWA-Datenbank nicht gefunden: {_db_path()}")
-    con = sqlite3.connect(f"{_db_path().resolve().as_uri()}?mode=ro", uri=True)
-    con.row_factory = sqlite3.Row
+    target = month or _current_month()
+    if not re.match(VALID_MONTH, target):
+        raise HTTPException(400, f"Ungültiger Monat: {target}")
+    con = _bwa_conn()
     try:
         cur = con.cursor()
         months = _all_months(cur)
-        target = month if month else (months[-1] if months else None)
-        if target:
-            if not re.match(VALID_MONTH, target):
-                raise HTTPException(400, f"Ungültiger Monat: {target}")
-            if target not in months:
-                raise HTTPException(404, f"Kein Eintrag für {target}")
-        if target is None:
-            raise HTTPException(404, "Noch keine BWA-Monate erfasst")
 
         entries = _merged_entries(cur, target)
         manual_entries = _load_month(cur, target)
@@ -428,10 +429,7 @@ async def save_overview(request: Request):
             continue  # leer/unparsbar = kein Eintrag (wie in nulleins)
         updates[key] = cents
 
-    if not _db_path().exists():
-        raise HTTPException(404, f"BWA-Datenbank nicht gefunden: {_db_path()}")
-    con = sqlite3.connect(str(_db_path()))
-    _ensure_daily_tables(con)
+    con = _bwa_conn()
     try:
         with con:
             # Doppelzählung verhindern: Die UI zeigt manuelle BWA + Tagesbuchungen
@@ -674,6 +672,7 @@ def _invoice_conn():
         raise HTTPException(404, f"Rechnungs-Datenbank nicht gefunden: {path}")
     con = sqlite3.connect(str(path))
     con.row_factory = sqlite3.Row
+    con.executescript(INVOICES_SCHEMA)
     _ensure_source_column(con)
     return con
 
@@ -694,9 +693,13 @@ def _row_to_invoice(r: sqlite3.Row) -> dict:
 
 
 def _has_pdf(invoice_id: str) -> bool:
-    row = _invoice_conn().execute(
-        "SELECT filename FROM invoice_files WHERE email_id = ?", (invoice_id,)
-    ).fetchone()
+    con = _invoice_conn()
+    try:
+        row = con.execute(
+            "SELECT filename FROM invoice_files WHERE email_id = ?", (invoice_id,)
+        ).fetchone()
+    finally:
+        con.close()
     if row is None:
         return False
     return (_invoice_files_dir() / row["filename"]).exists()
@@ -815,7 +818,7 @@ def _insert_invoice(con: sqlite3.Connection, *, source: str, filename: str,
 
 
 @router.patch("/invoices/{invoice_id}")
-async def invoice_update(invoice_id: str, body: dict):
+async def invoice_update(invoice_id: str, request: Request):
     """Metadaten korrigieren. Editierbar: vendor, subject, date, amountCents,
     currency, category, source. Optional payment: {payment_date,
     payment_description} setzt/aktualisiert die Zuordnung (confidence=manual),
@@ -823,6 +826,7 @@ async def invoice_update(invoice_id: str, body: dict):
     editable = {"vendor": "vendor", "subject": "subject", "date": "date",
                 "amountCents": "amount_cents", "currency": "currency",
                 "category": "category", "source": "source"}
+    body = await _read_json(request)
     con = _invoice_conn()
     try:
         r = con.execute("SELECT email_id FROM invoices WHERE email_id = ?", (invoice_id,)).fetchone()
@@ -976,6 +980,13 @@ def _report_conn():
     return report_db.connect()
 
 
+def _pick_month(requested: Optional[str], months: list[str]) -> str:
+    """Gewünschter Monat (falls gültig), sonst aktueller Monat."""
+    if requested and re.fullmatch(VALID_MONTH, requested):
+        return requested
+    return _current_month()
+
+
 def _konto_meta(konto: str, cur) -> tuple[int, str]:
     """(blatt, beschriftung) zu einer Kontonummer — aus bestehenden Zeilen oder Fallback."""
     r = cur.execute(
@@ -1027,9 +1038,8 @@ async def report_susa(month: Optional[str] = Query(None)):
         cur = con.cursor()
         months = [r["month"] for r in cur.execute(
             "SELECT DISTINCT month FROM susa_entries ORDER BY month")]
-        m = month if month in months else (months[-1] if months else None)
-        return {"month": m, "months": months,
-                "entries": _susa_response(con, m) if m else []}
+        m = _pick_month(month, months)
+        return {"month": m, "months": months, "entries": _susa_response(con, m)}
     finally:
         con.close()
 
@@ -1114,11 +1124,9 @@ async def report_opos(month: Optional[str] = Query(None)):
         cur = con.cursor()
         months = [r["month"] for r in cur.execute(
             "SELECT DISTINCT month FROM opos_entries ORDER BY month")]
-        m = month if month in months else (months[-1] if months else None)
-        rows = []
-        if m:
-            rows = [dict(r) for r in cur.execute(
-                "SELECT * FROM opos_entries WHERE month = ? ORDER BY datum, id", (m,))]
+        m = _pick_month(month, months)
+        rows = [dict(r) for r in cur.execute(
+            "SELECT * FROM opos_entries WHERE month = ? ORDER BY datum, id", (m,))]
         return {"month": m, "months": months, "entries": rows}
     finally:
         con.close()
@@ -1193,8 +1201,7 @@ async def report_vv(month: str = Query(...)):
     if not re.fullmatch(VALID_MONTH, month):
         raise HTTPException(400, "month (YYYY-MM) ist Pflicht")
     prev_month = f"{int(month[:4]) - 1}{month[4:]}"
-    con_bwa = sqlite3.connect(str(_db_path()))
-    con_bwa.row_factory = sqlite3.Row
+    con_bwa = _bwa_conn()
     rep = _report_conn()
     try:
         cur = con_bwa.cursor()
@@ -1320,63 +1327,67 @@ async def report_unbook(invoice_id: str):
         rep.close()
 
 
+from xml.sax.saxutils import escape as xesc  # noqa: E402
+
+
+def _sheet_xml(rows: list[list]) -> str:
+    out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+           '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>']
+    for ri, row in enumerate(rows, 1):
+        out.append(f'<row r="{ri}">')
+        for ci, val in enumerate(row, 1):
+            ref = f"{chr(64 + ci)}{ri}"
+            if isinstance(val, (int, float)):
+                out.append(f'<c r="{ref}"><v>{val}</v></c>')
+            else:
+                out.append(f'<c r="{ref}" t="inlineStr"><is><t>{xesc(str(val))}</t></is></c>')
+        out.append('</row>')
+    out.append('</sheetData></worksheet>')
+    return ''.join(out)
+
+def _build_xlsx(sheets: dict[str, list[list]]) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml',
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                   '<Default Extension="xml" ContentType="application/xml"/>'
+                   '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+                   + ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                             for i in range(1, len(sheets) + 1)) + '</Types>')
+        z.writestr('_rels/.rels',
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+                   '</Relationships>')
+        names = list(sheets)
+        z.writestr('xl/workbook.xml',
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                   'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+                   + ''.join(f'<sheet name="{xesc(n)[:31]}" sheetId="{i}" r:id="rId{i}"/>'
+                             for i, n in enumerate(names, 1)) + '</sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels',
+                   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                   + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>'
+                             for i in range(1, len(names) + 1)) + '</Relationships>')
+        for i, n in enumerate(names, 1):
+            z.writestr(f'xl/worksheets/sheet{i}.xml', _sheet_xml(sheets[n]))
+    return buf.getvalue()
+
+
+
 @router.get("/report/export")
 async def report_export(month: str = Query(...)):
     """Monatsreport als .xlsx im DATEV-Layout (KER-Blatt bleibt im BWA-Tab).
     Stdlib-only Minimal-xlsx-Writer (openpyxl ist im Backend-venv nicht vorhanden)."""
     import base64 as b64
-    import io
-    import zipfile
-    from xml.sax.saxutils import escape as xesc
     if not re.fullmatch(VALID_MONTH, month):
         raise HTTPException(400, "month (YYYY-MM) ist Pflicht")
-
-    def sheet_xml(rows: list[list]) -> str:
-        out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
-               '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>']
-        for ri, row in enumerate(rows, 1):
-            out.append(f'<row r="{ri}">')
-            for ci, val in enumerate(row, 1):
-                ref = f"{chr(64 + ci)}{ri}"
-                if isinstance(val, (int, float)):
-                    out.append(f'<c r="{ref}"><v>{val}</v></c>')
-                else:
-                    out.append(f'<c r="{ref}" t="inlineStr"><is><t>{xesc(str(val))}</t></is></c>')
-            out.append('</row>')
-        out.append('</sheetData></worksheet>')
-        return ''.join(out)
-
-    def build_xlsx(sheets: dict[str, list[list]]) -> bytes:
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            z.writestr('[Content_Types].xml',
-                       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-                       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-                       '<Default Extension="xml" ContentType="application/xml"/>'
-                       '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-                       + ''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-                                 for i in range(1, len(sheets) + 1)) + '</Types>')
-            z.writestr('_rels/.rels',
-                       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-                       '</Relationships>')
-            names = list(sheets)
-            z.writestr('xl/workbook.xml',
-                       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-                       'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
-                       + ''.join(f'<sheet name="{xesc(n)[:31]}" sheetId="{i}" r:id="rId{i}"/>'
-                                 for i, n in enumerate(names, 1)) + '</sheets></workbook>')
-            z.writestr('xl/_rels/workbook.xml.rels',
-                       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                       + ''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>'
-                                 for i in range(1, len(names) + 1)) + '</Relationships>')
-            for i, n in enumerate(names, 1):
-                z.writestr(f'xl/worksheets/sheet{i}.xml', sheet_xml(sheets[n]))
-        return buf.getvalue()
 
     rep = _report_conn()
     try:
@@ -1396,7 +1407,7 @@ async def report_export(month: str = Query(...)):
         for o in rep.execute("SELECT * FROM opos_entries WHERE month = ?", (month,)):
             opos_rows.append([o["konto"], o["beschriftung"], o["rechnungs_nr"], o["datum"],
                               o["faelligkeit"], round(o["betrag"], 2), o["buchungstext"]])
-        data = build_xlsx({f"SuSa {month}": susa_rows, f"OPOS {month}": opos_rows})
+        data = _build_xlsx({f"SuSa {month}": susa_rows, f"OPOS {month}": opos_rows})
         return {"filename": f"Report_Scialdone_{month}.xlsx",
                 "dataBase64": b64.b64encode(data).decode("ascii")}
     finally:
@@ -1404,10 +1415,11 @@ async def report_export(month: str = Query(...)):
 
 
 @router.post("/invoices/upload")
-async def invoice_upload(body: dict):
+async def invoice_upload(request: Request):
     """Manueller Upload: {filename, dataBase64, source? (upload|telegram|email),
     vendor?, date? (YYYY-MM-DD), amountCents?, currency?, category?}."""
     import base64 as b64
+    body = await _read_json(request)
     source = body.get("source") or "upload"
     if source not in SOURCES:
         raise HTTPException(400, f"source muss einer von {SOURCES} sein")
@@ -1442,3 +1454,29 @@ async def invoice_upload(body: dict):
             con2.close()
     finally:
         con.close()
+
+
+@router.get("/bwa/export")
+async def bwa_export(month: str = Query(...)):
+    """BWA (KER) eines Monats als .xlsx: Erfassungswerte + berechnetes Ergebnis."""
+    import base64 as b64
+    if not re.fullmatch(VALID_MONTH, month):
+        raise HTTPException(400, "month (YYYY-MM) ist Pflicht")
+    con = _bwa_conn()
+    try:
+        entries = _merged_entries(con.cursor(), month)
+    finally:
+        con.close()
+    r = compute_bwa(entries)
+    rows: list[list] = [[f"BWA {month_label_de(month)}", "", ""], ["Gruppe", "Position", "Betrag EUR"]]
+    for key, label, group in INPUT_FIELDS:
+        rows.append([group, label, round(_v(entries, key) / 100, 2)])
+    rows.append(["", "", ""])
+    for key, label in (("gesamtleistung", "Gesamtleistung"), ("rohertrag", "Rohertrag"),
+                       ("betrieblicherRohertrag", "Betrieblicher Rohertrag"),
+                       ("gesamtkosten", "Gesamtkosten"), ("betriebsergebnis", "Betriebsergebnis"),
+                       ("ergebnisVorSteuern", "Ergebnis vor Steuern"),
+                       ("vorlaeufigesErgebnis", "Vorläufiges Ergebnis")):
+        rows.append(["Ergebnis", label, round(r[key] / 100, 2)])
+    data = _build_xlsx({f"BWA {month}": rows})
+    return {"filename": f"BWA_{month}.xlsx", "dataBase64": b64.b64encode(data).decode("ascii")}
